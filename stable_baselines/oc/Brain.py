@@ -7,14 +7,24 @@ import numpy as np
 import tensorflow as tf
 
 
-from algorithms.Option import Option
-from algorithms.LCritic import LCritic
-from algorithms.Buffer import Buffer
-from algorithms.UCritic import UCritic
+from .Option import Option
+from .LCritic import LCritic
+from .Buffer import Buffer
+from .UCritic import UCritic
 
 # the number of models that will be saved
 MODEL_NUM = 100
 DELAY = 10000
+
+
+def get_vars(scope):
+    """
+    Alias for get_trainable_vars
+
+    :param scope: (str)
+    :return: [tf Variable]
+    """
+    return tf_util.get_trainable_vars(scope)
 
 
 class Brain:
@@ -160,8 +170,18 @@ from stable_baselines.ppo2.ppo2 import safe_mean, get_schedule_fn
 from stable_baselines.sac.policies import SACPolicy
 from stable_baselines import logger
 
+
 class soft_option_critic(object):
-    def __init__(self, env_dict, params):
+    def __init__(self, policy, env, env_dict, params, gamma=0.99, learning_rate=3e-4, buffer_size=50000,
+                 learning_starts=100, train_freq=1, batch_size=64,
+                 tau=0.005, ent_coef='auto', target_update_interval=1,
+                 gradient_steps=1, target_entropy='auto', action_noise=None,
+                 random_exploration=0.0, verbose=0, tensorboard_log=None,
+                 _init_setup_model=True, policy_kwargs=None, full_tensorboard_log=False):
+
+        super(soft_option_critic, self).__init__(policy=policy, env=env, replay_buffer=None, verbose=verbose,
+                                  policy_base=SACPolicy, requires_vec_env=False, policy_kwargs=policy_kwargs)
+
         """
         option_num, state_dim, action_dim, action_bound, gamma, learning_rate, replacement,
                  buffer_capacity, epsilon
@@ -199,10 +219,12 @@ class soft_option_critic(object):
         self.l_critic = LCritic(session=self.sess, state_dim=self.sd, action_dim=self.ad,
                                 gamma=l_gamma, learning_rate=l_lrcri)
 
-        # options and buffers
+        # options
         self.l_options = [Option(session=self.sess, state_dim=self.sd, action_dim=self.ad,
                                  ordinal=i, learning_rate=[l_lrpol, l_lrter])
                           for i in range(self.on)]
+
+        # buffers
         self.l_buffers = [Buffer(state_dim=self.sd, action_dim=self.ad, capacity=l_capac)
                           for i in range(self.on)]
 
@@ -222,6 +244,7 @@ class soft_option_critic(object):
             self.sess = tf_util.make_session(num_cpu=n_cpu, graph=self.graph)
 
             with tf.variable_scope("input", reuse=False):
+
                 # Create policy and target TF objects
                 self.policy_tf = self.policy(self.sess, self.observation_space, self.action_space,
                                              **self.policy_kwargs)
@@ -352,6 +375,7 @@ class soft_option_critic(object):
                     tf.assign(target, (1 - self.tau) * target + self.tau * source)
                     for target, source in zip(target_params, source_params)
                 ]
+
                 # Initializing target to match source variables
                 target_init_op = [
                     tf.assign(target, source)

@@ -180,6 +180,7 @@ class SAC(OffPolicyRLModel):
                     # Monitor the entropy of the policy,
                     # this is not used for training
                     self.entropy = tf.reduce_mean(self.policy_tf.entropy)
+
                     #  Use two Q-functions to improve performance by reducing overestimation bias.
                     qf1, qf2, value_fn = self.policy_tf.make_critics(self.processed_obs_ph, self.actions_ph,
                                                                      create_qf=True, create_vf=True)

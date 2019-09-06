@@ -168,7 +168,6 @@ def train(sess, env, option_critic):  # , critic):
             # select a new option
             new_option = np.argmax(option_critic.predict(current_state))
 
-            # + (1./(1. + i))
             #  state has more than 3 features in pong
             done = False
             termination = True

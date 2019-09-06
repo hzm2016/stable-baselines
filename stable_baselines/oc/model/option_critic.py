@@ -49,10 +49,12 @@ class OptionsNetwork(object):
         target_scaled_image = tf.to_float(self.target_inputs) / 255.0
         self.target_state_out_holder = self.create_state_network(
             target_scaled_image)
+
         with tf.variable_scope("target_q_out") as target_q_scope:
             self.target_Q_out = self.apply_target_q_model(
                 self.target_state_out_holder)
             target_q_scope.reuse_variables()
+
         self.target_network_params = tf.trainable_variables()[
             len(self.network_params) + len(self.Q_params):-2]
         self.target_Q_params = tf.trainable_variables()[-2:]
@@ -78,13 +80,18 @@ class OptionsNetwork(object):
              for i in range(len(self.target_Q_params))]
 
         # gather_nd should also do, though this is sexier
-        self.option = tf.placeholder(tf.int32, [None, 1], name="option")
-        self.action = tf.placeholder(
-            shape=[None, 1], dtype=tf.int32, name="action")
-        self.actions_onehot = tf.squeeze(tf.one_hot(
-            self.action, self.a_dim, dtype=tf.float32), [1])
-        self.options_onehot = tf.squeeze(tf.one_hot(
-            self.option, self.o_dim, dtype=tf.float32), [1])
+        self.option = tf.placeholder(dtype=tf.int32,
+                                     shape=[None, 1], name="option")
+
+        # discrete action
+        self.action = tf.placeholder(dtype=tf.int32,
+                                     shape=[None, 1], name="action")
+
+        # one-hot action and option
+        self.actions_onehot = tf.squeeze(tf.one_hot(self.action, self.a_dim,
+                                                    dtype=tf.float32), [1])
+        self.options_onehot = tf.squeeze(tf.one_hot(self.option, self.o_dim,
+                                                    dtype=tf.float32), [1])
 
         # Action Network
         self.action_input = tf.concat(
@@ -100,6 +107,7 @@ class OptionsNetwork(object):
             num_outputs=self.a_dim,
             activation_fn=tf.nn.softmax)
         self.action_probs = tf.squeeze(self.action_probs, [1])
+
         self.action_params = tf.trainable_variables()[
             len(self.network_params) + len(self.target_network_params) +
             len(self.Q_params) + len(self.target_Q_params):]
@@ -271,6 +279,7 @@ class OptionsNetwork(object):
             padding='VALID', biases_initializer=None)
         # Flatten and Feedforward
         flattened = tf.contrib.layers.flatten(conv3)
+
         net = tf.contrib.layers.fully_connected(
             inputs=flattened,
             num_outputs=self.h_size,

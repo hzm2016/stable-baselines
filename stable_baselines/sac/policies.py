@@ -218,6 +218,7 @@ class FeedForwardPolicy(SACPolicy):
             pi_h = mlp(pi_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
 
             self.act_mu = mu_ = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None)
+
             # Important difference with SAC and other algo such as PPO:
             # the std depends on the state, so we cannot use stable_baselines.common.distribution
             log_std = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None)
