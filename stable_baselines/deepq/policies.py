@@ -1,5 +1,6 @@
 import tensorflow as tf
 import tensorflow.contrib.layers as tf_layers
+# tf_layers = tf.layers
 import numpy as np
 from gym.spaces import Discrete
 

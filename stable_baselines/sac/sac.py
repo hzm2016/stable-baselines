@@ -82,6 +82,7 @@ class SAC(OffPolicyRLModel):
         self.train_freq = train_freq
         self.batch_size = batch_size
         self.tau = tau
+
         # In the original paper, same learning rate is used for all networks
         # self.policy_lr = learning_rate
         # self.qf_lr = learning_rate
@@ -148,6 +149,7 @@ class SAC(OffPolicyRLModel):
                 self.replay_buffer = ReplayBuffer(self.buffer_size)
 
                 with tf.variable_scope("input", reuse=False):
+
                     # Create policy and target TF objects
                     self.policy_tf = self.policy(self.sess, self.observation_space, self.action_space,
                                                  **self.policy_kwargs)
@@ -156,6 +158,7 @@ class SAC(OffPolicyRLModel):
 
                     # Initialize Placeholders
                     self.observations_ph = self.policy_tf.obs_ph
+
                     # Normalized observation for pixels
                     self.processed_obs_ph = self.policy_tf.processed_obs
                     self.next_observations_ph = self.target_policy.obs_ph
@@ -173,6 +176,7 @@ class SAC(OffPolicyRLModel):
                     # policy_out corresponds to stochastic actions, used for training
                     # logp_pi is the log probabilty of actions taken by the policy
                     self.deterministic_action, policy_out, logp_pi = self.policy_tf.make_actor(self.processed_obs_ph)
+
                     # Monitor the entropy of the policy,
                     # this is not used for training
                     self.entropy = tf.reduce_mean(self.policy_tf.entropy)
@@ -223,8 +227,7 @@ class SAC(OffPolicyRLModel):
 
                     # Target for Q value regression
                     q_backup = tf.stop_gradient(
-                        self.rewards_ph +
-                        (1 - self.terminals_ph) * self.gamma * self.value_target
+                        self.rewards_ph + (1 - self.terminals_ph) * self.gamma * self.value_target
                     )
 
                     # Compute Q-Function loss
@@ -444,15 +447,19 @@ class SAC(OffPolicyRLModel):
                            or self.num_timesteps < self.learning_starts:
                             break
                         n_updates += 1
+
                         # Compute current learning_rate
                         frac = 1.0 - step / total_timesteps
                         current_lr = self.learning_rate(frac)
+
                         # Update policy and critics (q functions)
                         mb_infos_vals.append(self._train_step(step, writer, current_lr))
+
                         # Update target network
                         if (step + grad_step) % self.target_update_interval == 0:
                             # Update target network
                             self.sess.run(self.target_update_op)
+
                     # Log losses and entropy, useful for monitor training
                     if len(mb_infos_vals) > 0:
                         infos_values = np.mean(mb_infos_vals, axis=0)
@@ -476,6 +483,7 @@ class SAC(OffPolicyRLModel):
 
                 num_episodes = len(episode_rewards)
                 self.num_timesteps += 1
+
                 # Display training infos
                 if self.verbose >= 1 and done and log_interval is not None and len(episode_rewards) % log_interval == 0:
                     fps = int(step / (time.time() - start_time))
@@ -497,6 +505,7 @@ class SAC(OffPolicyRLModel):
                     logger.dumpkvs()
                     # Reset infos:
                     infos_values = []
+
             return self
 
     def action_probability(self, observation, state=None, mask=None, actions=None, logp=False):
