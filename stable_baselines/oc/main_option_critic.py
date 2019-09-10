@@ -201,6 +201,7 @@ def train(sess, env, option_critic):  # , critic):
                 action_probs = option_critic.predict_action(
                     [current_state], np.reshape(current_option, [1, 1]))[0]
                 current_action = np.argmax(np.random.multinomial(1, action_probs))
+
                 if print_option_stats:
                     if print_option_stats:
                         action_counter[current_option][current_action] += 1
@@ -218,7 +219,6 @@ def train(sess, env, option_critic):  # , critic):
 
                 # execute action
                 next_state, reward, done, info = env.step(current_action)
-
 
                 next_state = state_processor.process(sess, next_state)
                 next_state = np.append(

@@ -161,9 +161,10 @@ class LCritic:
 
 class Soft_critic(object):
 
-    def __init__(self, session, state_dim, action_dim, gamma, tau=1e-2,
-                 learning_rate=1e-3, layers=None, layer_norm=False,
-                 feature_extraction="cnn", act_fun=tf.nn.relu):
+    def __init__(self, session, state_dim, action_dim, option_dim,
+                 gamma, tau=1e-2, learning_rate=1e-3,
+                 ent_coef='auto', target_entropy='auto', layers=None, layer_norm=False,
+                 feature_extraction="mlp", act_fun=tf.nn.relu):
         """Initiate the critic network for normalized states and actions"""
 
         # tensorflow session
@@ -172,26 +173,39 @@ class Soft_critic(object):
         # environment parameters
         self.sd = state_dim
         self.ad = action_dim
+        self.od = option_dim
 
         # define layers
         if layers is None:
             layers = [64, 64]
         self.layers = layers
         self.activ_fn = act_fun
+        self.target_entropy = target_entropy
 
         # some placeholder
         self.s = tf.placeholder(dtype=tf.float32, shape=(None, self.sd), name='state')
         self.a = tf.placeholder(dtype=tf.float32, shape=(None, self.ad), name='action')
-        self.policy = tf.placeholder(dtype=tf.float32, shape=(None, self.ad), name='policy')
-        self.logp_pi = tf.placeholder(dtype=tf.float32, shape=(None, self.ad), name='log_policy')
-        self.r = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='lower_reward')
+        self.s_ = tf.placeholder(dtype=tf.float32, shape=(None, self.sd), name='next_state')
+        self.r = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='reward')
         self.terminal = tf.placeholder(tf.float32, shape=(None, 1), name='terminal')
         self.gamma = gamma
         self.learning_rate = learning_rate
+        self.policy = tf.placeholder(dtype=tf.float32, shape=(None, self.ad), name='policy')
+        self.logp_pi = tf.placeholder(dtype=tf.float32, shape=(None, self.ad), name='log_policy')
+        self.option_term_prob = tf.placeholder(dtype=tf.float32, shape=(None, self.od), name='termination_prob')
 
-        # Normalization or not
+        self.tau = tau
+
+        # given the option and state
+        self.option = tf.placeholder(dtype=tf.int32, shape=(None, 1), name='option')
+        self.options_onehot = tf.squeeze(tf.one_hot(self.option, self.od,
+                                                    dtype=tf.float32), [1])
+
+        # Normalization or other features
         self.layer_norm = layer_norm
         self.feature_extraction = feature_extraction
+        self.ent_coef = ent_coef
+        self.log_ent_coef = None
 
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == 'auto':
@@ -202,24 +216,51 @@ class Soft_critic(object):
             # this will also throw an error for unexpected string
             self.target_entropy = float(self.target_entropy)
 
+        if isinstance(self.ent_coef, str) and self.ent_coef.startswith('auto'):
+            # Default initial value of ent_coef when learned
+            init_value = 1.0
+            if '_' in self.ent_coef:
+                init_value = float(self.ent_coef.split('_')[1])
+                assert init_value > 0., "The initial value of ent_coef must be greater than 0"
+
+            self.log_ent_coef = tf.get_variable('log_ent_coef', dtype=tf.float32,
+                                                initializer=np.log(init_value).astype(np.float32))
+            self.ent_coef = tf.exp(self.log_ent_coef)
+        else:
+            # Force conversion to float
+            # this will throw an error if a malformed string (different from 'auto')
+            # is passed
+            self.ent_coef = float(self.ent_coef)
+
         # evaluation and target network
-        qf1, qf2, value_fn = self._q_net(scope="state_value", action=self.a,
+        # sampled actions
+        qf1, qf2, value_fn = self._q_net(state=self.s, scope="state_value", action=self.a,
                                          create_qf=True, create_vf=True)
-        qf1_pi, qf2_pi, _ = self._q_net(scope=EVAL_SCOPE, action=self.policy,
+        # option value function
+        self.qf1_pi, self.qf2_pi, _ = self._q_net(state=self.s, scope="option_state_value", action=self.policy,
                                         create_qf=True, create_vf=False, reuse=True)
         # Create the value network
-        _, _, self.value_target = self._q_net(scope=TARGET_SCOPE,
-                                        create_qf=False, create_vf=True)
+        _, _, self.value_target = self._q_net(state=self.s_, scope="target_state_value",
+                                              create_qf=False, create_vf=True)
+
+        with tf.variable_scope("option_value"):
+            self.option_q_value = tf.reduce_sum(self.qf1_pi * self.options_onehot, [1])
+            self.option_v_value = tf.reduce_sum(self.value_target * self.options_onehot, [1])
+
+            self.advantage_value = tf.reduce_sum(self.option_term_prob * (self.option_q_value - self.option_v_value))
+
+        with tf.variable_scope("policy_over_options"):
+            # softmax policy
+            self.optimal_option_prob = tf.nn.softmax(self.value_target)
 
         # soft update
-        eval_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=EVAL_SCOPE)
-        target_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=TARGET_SCOPE)
+        eval_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="state_value")
+        target_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="target_state_value")
 
-        """ define loss """
         with tf.variable_scope("loss", reuse=False):
-
+            """ define loss """
             # Take the min of the two Q-Values (Double-Q Learning)
-            min_qf_pi = tf.minimum(qf1_pi, qf2_pi)
+            min_qf_pi = tf.minimum(self.qf1_pi, self.qf2_pi)
 
             # Target for Q value regression
             q_backup = tf.stop_gradient(
@@ -239,45 +280,31 @@ class Soft_critic(object):
                     self.log_ent_coef * tf.stop_gradient(self.logp_pi + self.target_entropy))
                 entropy_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
 
-            # Compute the policy loss
-            # Alternative: policy_kl_loss = tf.reduce_mean(logp_pi - min_qf_pi)
-            policy_kl_loss = tf.reduce_mean(self.ent_coef * self.logp_pi - qf1_pi)
-
-            # NOTE: in the original implementation, they have an additional
-            # regularization loss for the gaussian parameters
-            # this is not used for now
-            # policy_loss = (policy_kl_loss + policy_regularization_loss)
-            policy_loss = policy_kl_loss
-
             # Target for value fn regression
             # We update the vf towards the min of two Q-functions in order to
             # reduce overestimation bias from function approximation error.
             v_backup = tf.stop_gradient(min_qf_pi - self.ent_coef * self.logp_pi)
             value_loss = 0.5 * tf.reduce_mean((value_fn - v_backup) ** 2)
-
             values_losses = qf1_loss + qf2_loss + value_loss
 
             # Value train op
             value_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
-            values_params = get_vars('model/values_fn')
+            values_params = get_vars('state_value')
 
             # value train
-            train_values_op = value_optimizer.minimize(values_losses, var_list=values_params)
-
-            source_params = get_vars("model/values_fn/vf")
-            target_params = get_vars("target/values_fn/vf")
+            self.train_values_op = value_optimizer.minimize(values_losses, var_list=values_params)
 
             # Polyak averaging for target variables
             self.target_update_op = [
                 tf.assign(target, (1 - self.tau) * target + self.tau * source)
-                for target, source in zip(target_params, source_params)
+                for target, source in zip(target_params, eval_params)
             ]
 
-            # update target network
-            self.update_target_op = [tf.assign(t, e) for t, e in zip(target_params, eval_params)]
+            # Add entropy coefficient optimization operation if needed
+            if ent_coef_loss is not None:
+                self.ent_coef_op = entropy_optimizer.minimize(ent_coef_loss, var_list=self.log_ent_coef)
 
             # Monitor losses and entropy in tensorboard
-            tf.summary.scalar('policy_loss', policy_loss)
             tf.summary.scalar('qf1_loss', qf1_loss)
             tf.summary.scalar('qf2_loss', qf2_loss)
             tf.summary.scalar('value_loss', value_loss)
@@ -288,58 +315,55 @@ class Soft_critic(object):
 
             tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate))
 
-
-    def train(self, state_batch, action_batch, reward_batch, next_state_batch, next_action_batch, terminal_batch):
+    def train_critic(
+            self,
+            state_batch,
+            action_batch,
+            reward_batch,
+            next_state_batch,
+            next_action_batch,
+            terminal_batch,
+            logp_pi):
         """Train the critic network"""
 
-        # minimize the loss
-        self.sess.run(self.op, feed_dict={
+        _, _, _, = self.sess.run([self.train_values_op, self.target_update_op, self.ent_coef_op], feed_dict={
             self.s: state_batch,
             self.a: action_batch,
             self.r: reward_batch,
             self.s_: next_state_batch,
             self.a_: next_action_batch,
-            self.terminal: terminal_batch
-        })
-        self.train_counter += 1
-
-        if self.train_counter == 10:
-            self.sess.run(self.update)
-            self.train_counter = 0
-
-    def q_batch(self, state_batch, action_batch):
-        """Get the q batch"""
-
-        return self.sess.run(self.q, feed_dict={
-            self.s: state_batch,
-            self.a: action_batch
+            self.terminal: terminal_batch,
+            self.logp_pi: logp_pi
         })
 
-    def q_gradients(self, state_batch, action_batch):
-        """Get the q gradients batch"""
+        # soft update
+        # self.train_counter += 1
+        #
+        # if self.train_counter == 10:
+        #     self.sess.run(self.update)
+        #     self.train_counter = 0
 
-        return self.sess.run(self.qg, feed_dict={
-            self.s: state_batch,
-            self.a: action_batch
-        })
+    def _q_net(self, state=None, action=None, reuse=False,
+               scope="values_fn", create_vf=True, create_qf=True):
+        """ get v and q function"""
 
-    def _q_net(self, action=None, reuse=False, scope="values_fn",
-                     create_vf=True, create_qf=True):
         # if obs is None:
         #     obs = self.processed_obs
 
         with tf.variable_scope(scope, reuse=reuse):
             if self.feature_extraction == "cnn":
                 critics_h = self.state_model(
-                self.s, [[8, 8, 4, 32], [4, 4, 32, 64], [3, 3, 64, 64]], [[3136, 512]])
+                state, [[8, 8, 4, 32], [4, 4, 32, 64], [3, 3, 64, 64]], [[3136, 512]])
             else:
-                critics_h = tf.layers.flatten(self.s)
+                critics_h = tf.layers.flatten(state)
 
             if create_vf:
                 # Value function
                 with tf.variable_scope('vf', reuse=reuse):
                     vf_h = mlp(critics_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
-                    value_fn = tf.layers.dense(vf_h, 1, name="vf")
+
+                    # mlp full-connected layers
+                    value_fn = tf.layers.dense(vf_h, self.od, name="vf")
                 self.value_fn = value_fn
 
             if create_qf:
@@ -349,18 +373,50 @@ class Soft_critic(object):
                 # Double Q values to reduce overestimation
                 with tf.variable_scope('qf1', reuse=reuse):
                     qf1_h = mlp(qf_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
-                    qf1 = tf.layers.dense(qf1_h, 1, name="qf1")
+                    qf1 = tf.layers.dense(qf1_h, self.od, name="qf1")
 
                 with tf.variable_scope('qf2', reuse=reuse):
                     qf2_h = mlp(qf_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
-                    qf2 = tf.layers.dense(qf2_h, 1, name="qf2")
+                    qf2 = tf.layers.dense(qf2_h, self.od, name="qf2")
 
                 self.qf1 = qf1
                 self.qf2 = qf2
 
         return self.qf1, self.qf2, self.value_fn
 
+    def q_value_batch(self, state_batch, action_batch):
+        """Get the q batch"""
+
+        return self.sess.run(self.qf1_pi, feed_dict={
+            self.s: state_batch,
+            self.a: action_batch
+        })
+
+    def advantage_batch(self, state_batch, option_term_prob):
+        """Get the q batch"""
+
+        return self.sess.run([self.advantage_value], feed_dict={
+            self.s: state_batch,
+            self.optimal_option_prob: option_term_prob
+        })
+
+    def predict_value(self, state, option):
+        """ return option value """
+
+        return self.sess.run([self.qf1_pi, self.option_q_value, self.option_v_value], feed_dict={
+            self.s: [state],
+            self.option: option
+        })
+
+    def predict_option(self, state):
+        """ return options """
+
+        return self.sess.run(self.optimal_option_prob, feed_dict={
+            self.s: [state]
+        })
+
     def state_model(self, input, kernel_shapes, weight_shapes):
+        """ to cope with the input is image"""
 
         weights1 = tf.get_variable(
             "weights1", kernel_shapes[0],
@@ -389,5 +445,4 @@ class Soft_critic(object):
         # Flatten and Feedforward
         flattened = tf.layers.flatten(conv3)
         net = tf.nn.relu(tf.nn.xw_plus_b(flattened, weights4, bias1))
-
         return net

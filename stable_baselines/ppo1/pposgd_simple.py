@@ -43,7 +43,8 @@ class PPO1(ActorCriticRLModel):
         WARNING: this logging can take a lot of space quickly
     """
 
-    def __init__(self, policy, env, gamma=0.99, timesteps_per_actorbatch=256, clip_param=0.2, entcoeff=0.01,
+    def __init__(self, policy, env, gamma=0.99,
+                 timesteps_per_actorbatch=256, clip_param=0.2, entcoeff=0.01,
                  optim_epochs=4, optim_stepsize=1e-3, optim_batchsize=64, lam=0.95, adam_epsilon=1e-5,
                  schedule='linear', verbose=0, tensorboard_log=None,
                  _init_setup_model=True, policy_kwargs=None, full_tensorboard_log=False):
@@ -105,7 +106,9 @@ class PPO1(ActorCriticRLModel):
                     old_pi = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                          None, reuse=False, **self.policy_kwargs)
 
+                # Define loss function
                 with tf.variable_scope("loss", reuse=False):
+
                     # Target advantage function (if applicable)
                     atarg = tf.placeholder(dtype=tf.float32, shape=[None])
 
@@ -121,6 +124,7 @@ class PPO1(ActorCriticRLModel):
                     obs_ph = self.policy_pi.obs_ph
                     action_ph = self.policy_pi.pdtype.sample_placeholder([None])
 
+                    # KL
                     kloldnew = old_pi.proba_distribution.kl(self.policy_pi.proba_distribution)
                     ent = self.policy_pi.proba_distribution.entropy()
                     meankl = tf.reduce_mean(kloldnew)
@@ -184,6 +188,7 @@ class PPO1(ActorCriticRLModel):
 
                 self.lossandgrad = tf_util.function([obs_ph, old_pi.obs_ph, action_ph, atarg, ret, lrmult],
                                                     [self.summary, tf_util.flatgrad(total_loss, self.params)] + losses)
+
                 self.compute_losses = tf_util.function([obs_ph, old_pi.obs_ph, action_ph, atarg, ret, lrmult],
                                                        losses)
 
@@ -322,7 +327,9 @@ class PPO1(ActorCriticRLModel):
                         logger.record_tabular("EpRewMean", np.mean(rewbuffer))
                     logger.record_tabular("EpThisIter", len(lens))
                     episodes_so_far += len(lens)
+
                     current_it_timesteps = MPI.COMM_WORLD.allreduce(seg["total_timestep"])
+
                     timesteps_so_far += current_it_timesteps
                     self.num_timesteps += current_it_timesteps
                     iters_so_far += 1

@@ -254,7 +254,6 @@ class SAC(OffPolicyRLModel):
                     # policy_loss = (policy_kl_loss + policy_regularization_loss)
                     policy_loss = policy_kl_loss
 
-
                     # Target for value fn regression
                     # We update the vf towards the min of two Q-functions in order to
                     # reduce overestimation bias from function approximation error.
@@ -280,6 +279,7 @@ class SAC(OffPolicyRLModel):
                         tf.assign(target, (1 - self.tau) * target + self.tau * source)
                         for target, source in zip(target_params, source_params)
                     ]
+
                     # Initializing target to match source variables
                     target_init_op = [
                         tf.assign(target, source)

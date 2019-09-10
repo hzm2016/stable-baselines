@@ -167,6 +167,7 @@ class OptionsNetwork(object):
             tf.reduce_max(self.Q_out, reduction_indices=[1]))
         self.disc_q = tf.stop_gradient(tf.reduce_sum(
             self.Q_out * self.options_onehot, [1]))
+
         self.picked_action_prob = tf.reduce_sum(
             self.action_probs * self.actions_onehot, [1])
 
@@ -174,6 +175,7 @@ class OptionsNetwork(object):
                                   tf.log(self.action_probs))
         policy_gradient = - tf.reduce_sum(tf.log(self.picked_action_prob) * y) - \
             entropy_reg * entropy
+
         self.term_gradient = tf.reduce_sum(
             self.option_term_prob * (self.disc_q - self.value))
 
@@ -196,6 +198,7 @@ class OptionsNetwork(object):
     def apply_q_model(self, input):
         with tf.variable_scope("q_input"):
             output = self.q_model(input, [self.h_size, self.o_dim])
+
         return output
 
     def apply_target_q_model(self, input):

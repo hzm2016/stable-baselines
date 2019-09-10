@@ -13,6 +13,7 @@ from stable_baselines.a2c.utils import discount_with_dones, Scheduler, mse, \
     total_episode_reward_logger
 from stable_baselines.ppo2.ppo2 import safe_mean
 
+
 class A2C(ActorCriticRLModel):
     """
     The A2C (Advantage Actor Critic) model class, https://arxiv.org/abs/1602.01783
@@ -125,8 +126,10 @@ class A2C(ActorCriticRLModel):
 
                     neglogpac = train_model.proba_distribution.neglogp(self.actions_ph)
                     self.entropy = tf.reduce_mean(train_model.proba_distribution.entropy())
+
                     self.pg_loss = tf.reduce_mean(self.advs_ph * neglogpac)
                     self.vf_loss = mse(tf.squeeze(train_model.value_flat), self.rewards_ph)
+
                     # https://arxiv.org/pdf/1708.04782.pdf#page=9, https://arxiv.org/pdf/1602.01783.pdf#page=4
                     # and https://github.com/dennybritz/reinforcement-learning/issues/34
                     # suggest to add an entropy component in order to improve exploration.
@@ -139,6 +142,7 @@ class A2C(ActorCriticRLModel):
 
                     self.params = tf_util.get_trainable_vars("model")
                     grads = tf.gradients(loss, self.params)
+
                     if self.max_grad_norm is not None:
                         grads, _ = tf.clip_by_global_norm(grads, self.max_grad_norm)
                     grads = list(zip(grads, self.params))
@@ -238,6 +242,7 @@ class A2C(ActorCriticRLModel):
                 # true_reward is the reward without discount
                 obs, states, rewards, masks, actions, values, ep_infos, true_reward = runner.run()
                 ep_info_buf.extend(ep_infos)
+
                 _, value_loss, policy_entropy = self._train_step(obs, states, rewards, masks, actions, values,
                                                                  self.num_timesteps // self.n_batch, writer)
                 n_seconds = time.time() - t_start
