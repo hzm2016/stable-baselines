@@ -2,6 +2,7 @@
 import os
 
 import gym
+import roboschool
 
 from stable_baselines.ppo1 import PPO1
 from stable_baselines.common.cmd_util import make_mujoco_env, mujoco_arg_parser
@@ -20,7 +21,7 @@ def train(num_timesteps, seed, model_path=None):
     """
     env_id = 'Humanoid-v2'
 
-    env = make_mujoco_env(env_id, seed)
+    env = gym.make("RoboschoolHumanoid-v1")
 
     # parameters below were the best found in a simple random search
     # these are good enough to make humanoid walk, but whether those are
@@ -59,6 +60,7 @@ def main():
     if not args.play:
         # train the model
         train(num_timesteps=args.num_timesteps, seed=args.seed, model_path=args.model_path)
+
     else:
         # construct the model object, load pre-trained model and render
         model = train(num_timesteps=1, seed=args.seed)

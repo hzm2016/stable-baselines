@@ -1,10 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-
 """
 An implementation of deterministic option, including deterministic policy
 and termination function, which are parameterized by different parameters.
-
 """
 
 import tensorflow as tf
@@ -92,6 +90,7 @@ def apply_squashing_func(mu_, pi_, logp_pi):
     # Squash the output
     deterministic_policy = tf.tanh(mu_)
     policy = tf.tanh(pi_)
+
     # OpenAI Variation:
     # To avoid evil machine precision error, strictly clip 1-pi**2 to [0,1] range.
     # logp_pi -= tf.reduce_sum(tf.log(clip_but_pass_gradient(1 - policy ** 2, lower=0, upper=1) + EPS), axis=1)
@@ -119,6 +118,7 @@ class Option:
 
         # some placeholders
         self.s = tf.placeholder(dtype=tf.float32, shape=(None, self.sd), name='state')
+
         self.qg = tf.placeholder(dtype=tf.float32, shape=(None, self.ad), name='q_gradient')
         self.adv = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='advantage')
 
@@ -144,6 +144,7 @@ class Option:
         self.pop = tf.train.AdamOptimizer(-lrp).apply_gradients(zip(pg, ep_params))
         self.top = tf.train.AdamOptimizer(-lrt).apply_gradients(zip(tg, te_params))
 
+        # train termination function
         self.prob = tf.placeholder(dtype=tf.float32, shape=(None, 1))
         self.diff = tf.reduce_max(tf.abs(self.prob - self.p))
         self.loss = tf.nn.l2_loss(self.prob - self.p)
@@ -154,16 +155,11 @@ class Option:
     def train(self, state_batch, q_gradient_batch, advantage_batch=None):
         """Train the policy and termination function"""
 
-        self.sess.run(self.pop, feed_dict={
+        self.sess.run([self.pop, self.top], feed_dict={
             self.s: state_batch,
-            self.qg: q_gradient_batch
+            self.qg: q_gradient_batch,
+            self.adv: advantage_batch
         })
-
-        if advantage_batch is not None:
-            self.sess.run(self.top, feed_dict={
-                self.s: state_batch,
-                self.adv: advantage_batch
-            })
 
         self.train_counter += 1
 
@@ -178,7 +174,7 @@ class Option:
             self.s: state[np.newaxis, :]
         })[0]
 
-    def get_prob(self, state):
+    def get_ter_prob(self, state):
         """Get termination probability of current state"""
 
         return self.sess.run(self.p, feed_dict={
@@ -326,11 +322,10 @@ class Option:
                 break
 
 
-class Soft_Option(object):
-    def __init__(self, session, state_dim, action_dim, option_dim,
+class Soft_option(object):
+    def __init__(self, session, state_dim, action_dim, option_name="",
                  tau=1e-2, learning_rate=1e-3, target_entropy='auto',
                  ent_coef='auto', layers=None, layer_norm=False):
-
         """
         :param learning_rate: (learning_rate_policy, learning_rate_termin)
         :param ordinal: the name to tell different options apart
@@ -342,7 +337,6 @@ class Soft_Option(object):
         # environment parameters
         self.sd = state_dim
         self.ad = action_dim
-        self.od = option_dim
         self.learning_rate_policy, self.learning_rate_termination = learning_rate
 
         # set parameters
@@ -358,38 +352,34 @@ class Soft_Option(object):
         self.ent_coef = ent_coef
 
         # evaluation and target scope
-        ep_scope = 'eval_policy'
-        tp_scope = 'target_policy'
-        te_scope = 'termination'
+        ep_scope = 'eval_policy_' + option_name
+        # tp_scope = 'target_policy_' + option_name
+        te_scope = 'termination_' + option_name
 
         # define parameters to collect
-        self.infos_names = None
-        self.step_ops = None
-
-        # Termination function
-        self.termination_probs = self._termination_net(scope=te_scope, trainable=True)
-        te_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=te_scope)
+        self.step_ops = []
 
         # some placeholders
         self.s = tf.placeholder(dtype=tf.float32, shape=(None, self.sd), name='state')
+        self.terminal = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='terminal')
 
-        # given the option and state
-        self.option = tf.placeholder(dtype=tf.int32, shape=(None, 1), name='option')
+        # Termination function
+        self.term_prob = self._termination_net(input=self.s, scope=te_scope, trainable=True)
+        te_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=te_scope)
 
-        self.options_onehot = tf.squeeze(tf.one_hot(self.option, self.od,
-                                                    dtype=tf.float32), [1])
+        self.term_prob_next = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='next_term_prob')
 
-        self.option_value = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='option_gradient')
+        self.state_option_value = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='state_option_value')
         self.adv = tf.placeholder(dtype=tf.float32, shape=(None, 1), name='advantage_value')
 
         # evaluation and target network
-        self.deterministic_policy, self.policy, self.logp_pi = self._option_net(scope=ep_scope, reuse=True)
-        self.deterministic_policy_, self.policy_, self.logp_pi_ = self._option_net(scope=tp_scope, reuse=False)
+        self.action, self.policy, self.logp_pi = self._option_net(input_s=self.s, scope=ep_scope, reuse=False)
+        # self.action_, self.policy_, self.logp_pi_ = self._option_net(scope=tp_scope, reuse=False)
 
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == 'auto':
             # automatically set target entropy if needed
-            self.target_entropy = -np.prod(self.env.action_space.shape).astype(np.float32)
+            self.target_entropy = -np.prod(self.ad).astype(np.float32)
         else:
             # Force conversion
             # this will also throw an error for unexpected string
@@ -402,7 +392,7 @@ class Soft_Option(object):
                 init_value = float(self.ent_coef.split('_')[1])
                 assert init_value > 0., "The initial value of ent_coef must be greater than 0"
 
-            self.log_ent_coef = tf.get_variable('log_ent_coef', dtype=tf.float32,
+            self.log_ent_coef = tf.get_variable('log_ent_coef_' + option_name, dtype=tf.float32,
                                                 initializer=np.log(init_value).astype(np.float32))
             self.ent_coef = tf.exp(self.log_ent_coef)
         else:
@@ -421,15 +411,14 @@ class Soft_Option(object):
 
         # soft update
         ep_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=ep_scope)
-        tp_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=tp_scope)
+        tp_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=te_scope)
 
-        # define loss
-        with tf.variable_scope("loss", reuse=False):
-
+        # define policy loss
+        with tf.variable_scope("loss_" + option_name, reuse=False):
             with tf.variable_scope("policy_loss", reuse=False):
                 # Compute the policy loss
                 # Alternative: policy_kl_loss = tf.reduce_mean(logp_pi - min_qf_pi)
-                policy_kl_loss = tf.reduce_mean(self.ent_coef * self.logp_pi - self.option_value)
+                policy_kl_loss = tf.reduce_mean(self.ent_coef * self.logp_pi - self.state_option_value)
 
                 # NOTE: in the original implementation, they have an additional
                 # regularization loss for the gaussian parameters
@@ -444,9 +433,10 @@ class Soft_Option(object):
                 self.step_ops += [self.policy_train_op]
 
             with tf.variable_scope("termination_loss", reuse=False):
-                self.term_gradient = tf.gradients(ys=self.p, xs=te_params, grad_ys=-self.adv)
+                # next state and option
+                self.beta_loss = tf.reduce_mean(self.term_prob * self.adv * (1 - self.terminal))
                 self.termination_train_op = \
-                    tf.train.AdamOptimizer(-self.learning_rate_termination).apply_gradients(zip(self.term_gradient, te_params))
+                    tf.train.AdamOptimizer(-self.learning_rate_termination).minimize(self.beta_loss, var_list=te_params)
                 self.step_ops += [self.termination_train_op]
 
             # Add entropy coefficient optimization operation if needed
@@ -455,42 +445,69 @@ class Soft_Option(object):
                 self.step_ops += [ent_coef_op, self.ent_coef]
 
             # pretrain
-            if self.pretrain:
-                # for pretrain termination function
-                self.prob = tf.placeholder(dtype=tf.float32, shape=(None, 1))
-                self.diff = tf.reduce_max(tf.abs(self.prob - self.p))
-                self.loss = tf.nn.l2_loss(self.prob - self.p)
-                self.oop = tf.train.AdamOptimizer(1e-2).minimize(self.loss)
-
-                self.step_ops += [self.oop]
-
-        # collect termination prob
-        with tf.variable_scope("termination_probs", reuse=False):
-            self.option_term_prob = tf.reduce_sum(
-                self.termination_probs * self.options_onehot, [1])
+            # if self.pretrain:
+            #     # for pretrain termination function
+            #     self.prob = tf.placeholder(dtype=tf.float32, shape=(None, 1))
+            #     self.diff = tf.reduce_max(tf.abs(self.prob - self.p))
+            #     self.loss = tf.nn.l2_loss(self.prob - self.p)
+            #     self.oop = tf.train.AdamOptimizer(1e-2).minimize(self.loss)
+            #
+            #     self.step_ops += [self.oop]
 
         # update target network
-        self.target_update_op = [
-            tf.assign(target, (1 - self.tau) * target + self.tau * source)
-            for target, source in zip(tp_params, ep_params)
-        ]
-        self.step_ops += [self.target_update_op]
+        # self.target_update_op = [
+        #     tf.assign(target, (1 - self.tau) * target + self.tau * source)
+        #     for target, source in zip(tp_params, ep_params)
+        # ]
+
+        # self.step_ops += [self.target_update_op]
 
         # self.update = [tf.assign(t, e) for t, e in zip(tp_params, ep_params)]
-        self.train_counter = 0
+        # self.train_counter = 0
 
-    def _option_net(self, reuse=False, scope=""):
+    def train_option(self,
+                     state_batch,
+                     q_value_batch,
+                     term_prob_batch,
+                     terminal_batch,
+                     advantage_batch):
+        """ Train the policy and termination function """
+
+        _ = self.sess.run(self.step_ops,
+                      feed_dict={
+                          self.s: state_batch,
+                          self.state_option_value: q_value_batch,
+                          self.term_prob_next: term_prob_batch,
+                          self.terminal: terminal_batch,
+                          self.adv: advantage_batch})
+
+    def choose_action(self, state):
+        """Choose action"""
+
+        return self.sess.run(self.action, feed_dict={
+            self.s: state[np.newaxis, :]
+        })[0]
+
+    def get_actions(self, state_batch):
+        """Get target actions"""
+
+        return self.sess.run([self.action, self.policy, self.logp_pi], feed_dict={
+            self.s: state_batch[np.newaxis, :]
+        })
+
+    def get_term_prob(self, state):
+        """Get termination probability of current state"""
+
+        return self.sess.run(self.term_prob, feed_dict={
+            self.s: state[np.newaxis, :]
+        })[0]
+
+    def _option_net(self, input_s=None, reuse=False, scope=""):
         """Generate evaluation/target option network"""
 
         with tf.variable_scope(scope, reuse=reuse):
 
-            # contact the effect of option
-            input_s = tf.concat([self.s, self.option], axis=1)
-
-            if self.feature_extraction == "cnn":
-                pi_h = self.cnn_extractor(input_s, **self.cnn_kwargs)
-            else:
-                pi_h = tf.layers.flatten(input_s)
+            pi_h = tf.layers.flatten(input_s)
 
             pi_h = mlp(pi_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
 
@@ -500,126 +517,48 @@ class Soft_Option(object):
             # the std depends on the state, so we cannot use stable_baselines.common.distribution
             log_std = tf.layers.dense(pi_h, self.ad, activation=None)
 
-        # Regularize policy output (not used for now)
-        # reg_loss = self.reg_weight * 0.5 * tf.reduce_mean(log_std ** 2)
-        # reg_loss += self.reg_weight * 0.5 * tf.reduce_mean(mu ** 2)
-        # self.reg_loss = reg_loss
+            # Regularize policy output (not used for now)
+            # reg_loss = self.reg_weight * 0.5 * tf.reduce_mean(log_std ** 2)
+            # reg_loss += self.reg_weight * 0.5 * tf.reduce_mean(mu ** 2)
+            # self.reg_loss = reg_loss
 
-        # OpenAI Variation to cap the standard deviation
-        # activation = tf.tanh # for log_std
-        # log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
-        # Original Implementation
-        log_std = tf.clip_by_value(log_std, LOG_STD_MIN, LOG_STD_MAX)
+            # OpenAI Variation to cap the standard deviation
+            # activation = tf.tanh # for log_std
+            # log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
+            # Original Implementation
+            log_std = tf.clip_by_value(log_std, LOG_STD_MIN, LOG_STD_MAX)
 
-        self.std = std = tf.exp(log_std)
+            self.std = std = tf.exp(log_std)
 
-        # Reparameterization trick
-        pi_ = mu_ + tf.random_normal(tf.shape(mu_)) * std
-        logp_pi = gaussian_likelihood(pi_, mu_, log_std)
-        self.entropy = tf.reduce_mean(gaussian_entropy(log_std))
+            # Reparameterization trick
+            pi_ = mu_ + tf.random_normal(tf.shape(mu_)) * std
+            logp_pi = gaussian_likelihood(pi_, mu_, log_std)
+            self.entropy = tf.reduce_mean(gaussian_entropy(log_std))
 
-        # MISSING: reg params for log and mu
-        # Apply squashing and account for it in the probabilty
-        deterministic_policy, policy, logp_pi = apply_squashing_func(mu_, pi_, logp_pi)
+            # MISSING: reg params for log and mu
+            # Apply squashing and account for it in the probabilty
+            deterministic_policy, policy, logp_pi = apply_squashing_func(mu_, pi_, logp_pi)
 
         self.policy = policy
         self.deterministic_policy = deterministic_policy
 
         return deterministic_policy, policy, logp_pi
 
-    def _termination_net(self, scope, trainable):
+    def _termination_net(self, input, scope, trainable):
         """Generate evaluation/target option network"""
 
         with tf.variable_scope(scope):
 
-            x = tf.layers.dense(self.s, 32, activation=tf.nn.relu,
+            x = tf.layers.dense(input, 32, activation=tf.nn.relu,
                                 kernel_initializer=INIT_WEIGHT, bias_initializer=INIT_BIAS,
                                 trainable=trainable, name='dense1')
             x = tf.layers.batch_normalization(x, training=True, trainable=trainable, name='batch1')
 
-            prob = tf.layers.dense(x, self.od, activation=tf.nn.sigmoid,
+            prob = tf.layers.dense(x, 1, activation=tf.nn.sigmoid,
                                    kernel_initializer=INIT_WEIGHT, bias_initializer=INIT_BIAS,
                                    trainable=trainable, name='prob')
 
         return prob
-
-    def state_model(self, input, kernel_shapes, weight_shapes):
-
-        weights1 = tf.get_variable(
-            "weights1", kernel_shapes[0],
-            initializer=tf.contrib.layers.xavier_initializer())
-        weights2 = tf.get_variable(
-            "weights2", kernel_shapes[1],
-            initializer=tf.contrib.layers.xavier_initializer())
-        weights3 = tf.get_variable(
-            "weights3", kernel_shapes[2],
-            initializer=tf.contrib.layers.xavier_initializer())
-        weights4 = tf.get_variable(
-            "weights5", weight_shapes[0],
-            initializer=tf.contrib.layers.xavier_initializer())
-        bias1 = tf.get_variable(
-            "q_bias1", weight_shapes[0][1],
-            initializer=tf.constant_initializer())
-
-        # Convolve
-        conv1 = tf.nn.relu(tf.nn.conv2d(
-            input, weights1, strides=[1, 4, 4, 1], padding='VALID'))
-        conv2 = tf.nn.relu(tf.nn.conv2d(
-            conv1, weights2, strides=[1, 2, 2, 1], padding='VALID'))
-        conv3 = tf.nn.relu(tf.nn.conv2d(
-            conv2, weights3, strides=[1, 1, 1, 1], padding='VALID'))
-
-        # Flatten and Feedforward
-        flattened = tf.contrib.layers.flatten(conv3)
-        net = tf.nn.relu(tf.nn.xw_plus_b(flattened, weights4, bias1))
-
-        return net
-
-    def train_option(self, state_batch, q_value_batch, option_batch, advantage_batch=None):
-        """Train the policy and termination function"""
-
-        _, _, _ = self.sess.run(self.step_ops,
-                      feed_dict={
-                          self.s: state_batch,
-                          self.option: option_batch,
-                          self.option_value: q_value_batch,
-                          self.adv: advantage_batch})
-
-        # self.train_counter += 1
-        #
-        # if self.train_counter == 10:
-        #     self.sess.run(self.update)
-        #     self.train_counter = 0
-
-    def choose_action(self, state, option):
-        """Choose action"""
-
-        return self.sess.run(self.deterministic_policy_, feed_dict={
-            self.s: state[np.newaxis, :],
-            self.option: option
-        })[0]
-
-    def get_term_prob(self, state, option):
-        """Get termination probability of current state"""
-
-        return self.sess.run([self.termination_probs, self.option_term_prob], feed_dict={
-            self.s: state[np.newaxis, :],
-            self.option: option
-        })[0]
-
-    def get_actions(self, state_batch):
-        """Get target actions"""
-
-        return self.sess.run(self.a, feed_dict={
-            self.s: state_batch
-        })
-
-    def get_target_actions(self, state_batch):
-        """Get target actions"""
-
-        return self.sess.run(self.a_, feed_dict={
-            self.s: state_batch
-        })
 
     def render(self):
         """Render option and termination function"""

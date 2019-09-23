@@ -81,6 +81,7 @@ def apply_squashing_func(mu_, pi_, logp_pi):
     # logp_pi -= tf.reduce_sum(tf.log(clip_but_pass_gradient(1 - policy ** 2, lower=0, upper=1) + EPS), axis=1)
     # Squash correction (from original implementation)
     logp_pi -= tf.reduce_sum(tf.log(1 - policy ** 2 + EPS), axis=1)
+
     return deterministic_policy, policy, logp_pi
 
 

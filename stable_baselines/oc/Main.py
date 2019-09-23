@@ -13,6 +13,8 @@ CarRacing-v0
 
 import numpy as np
 import tensorflow as tf
+
+import roboschool
 import gym
 import sys
 import getopt
@@ -91,7 +93,7 @@ class Comb:
 
         np.random.seed(seed)
         self.env.seed(np.random.randint(10000))
-        tf.set_random_seed(np.random.randint(10000))
+        tf.random.set_random_seed(np.random.randint(10000))
 
     def step(self, action):
         """Wrapper for the environment step, normalized state and action"""
@@ -241,14 +243,10 @@ class Comb:
 
 class soft_option_critic(object):
     """ soft option critic"""
-
     def __init__(self, env):
 
         # test environment
         self.env = env
-        # self.env = gym.make('LunarLanderContinuous-v2')
-        # self.env = gym.make('MountainCarContinuous-v0')
-        # self.env = gym.make('Pendulum-v0')
 
         # seed the env
         self.seed()
@@ -267,6 +265,7 @@ class soft_option_critic(object):
                        'cycles': 2,
                        'episode_num': 1000,
                        'max_step': 10000,
+                       'warm_start': 100,
                        'batch_size': 32,
                        'render': True,
                        'upper_capacity': 100000,
@@ -285,7 +284,7 @@ class soft_option_critic(object):
         self.state = np.zeros(self.env_dict['state_dim'])
         self.target = np.zeros(self.env_dict['state_dim'])
         self.start_state = self.state.copy()
-        self.option = -1    # current option
+        self.option = -1
         self.option_reward = 0
         self.option_time = 0
 
@@ -298,64 +297,13 @@ class soft_option_critic(object):
         self.model_counter = 0              # model counter
         self.model_ordinal = 0              # model ordinal
 
-    def seed(self, seed=42):
-        """Wrapper seed the environment for reproducing the result"""
-
-        np.random.seed(seed)
-        self.env.seed(np.random.randint(10000))
-        tf.set_random_seed(np.random.randint(10000))
-
-    def step(self, action):
-        """Wrapper for the environment step, normalized state and action"""
-
-        next_state, reward, done, _ = self.env.step(action * self.env_dict['action_scale'])
-
-        return next_state / self.env_dict['state_scale'], reward, done
-
-    def reset(self):
-        """Wrapper for the environment step"""
-
-        self.state, self.target = self.env.reset()
-        self.state /= self.env_dict['state_scale']
-
-    def update_params(self, params):
-        """Update params"""
-
-        self.params.update(params)
-        self.brain = Brain(env_dict=self.env_dict, params=self.params)
-
-    def choose_action(self):
-        """Choose action with noise"""
-
-        action = self.brain.choose_action(self.state, self.option)
-        action += np.random.normal(0.0, self.gauss[self.option], self.env_dict['action_dim'])
-        action = np.clip(action, -1.0, 1.0)
-
-        return action
-
-    def save_model(self):
-        """Save model"""
-
-        self.model_counter += 1
-        if self.model_counter == SAVE_MODEL_STEP:
-            self.model_counter = 0
-            self.brain.save_model(self.model_ordinal)
-            self.model_ordinal += 1
-
-    def change_option(self):
-        """Judge whether change option"""
-
-        self.option_reward = 0
-        self.option_time = 0
-        self.option = self.brain.choose_option(self.state)
-        self.start_state = self.state.copy()
-
     def train(self):
         """ training process """
 
         record_reward = np.zeros((self.params['cycles'], self.params['episode_num']), dtype=np.float32)
-        for cycle in self.params['cycles']:
-            for ep in self.params['episode_num']:
+        total_steps = 0
+        for cycle in range(self.params['cycles']):
+            for ep in range(self.params['episode_num']):
                 ep_reward = 0
                 t = 0
                 self.reset()
@@ -369,7 +317,7 @@ class soft_option_critic(object):
                     # step the environment
                     next_state, reward, done = self.step(action)
 
-                    self.brain.l_buffers.store(self.state, action, reward, next_state)
+                    self.brain.l_buffer.store(self.state, self.option, action, reward, next_state, done)
 
                     # record the option
                     self.record_option()
@@ -380,36 +328,90 @@ class soft_option_critic(object):
                     self.option_reward += reward
                     self.option_time += 1
 
-                    # train critic
-                    self.brain.train_critic(self.params['batch_size'])
-
-                    # train lower options and decay the variance
-                    if self.brain.train_option(self.params['batch_size'], self.option):
-                        self.gauss[self.option] *= GAUSS_DECAY
+                    if total_steps > self.params['warm_start']:
+                        self.brain.training_batch(self.params['batch_size'])
+                        # # train critic
+                        # self.brain.train_critic(self.params['batch_size'])
+                        #
+                        # # train lower options and decay the variance
+                        # self.brain.train_option(self.params['batch_size'])
 
                     # done
-                    if done:
+                    if done or t >= self.params['max_step']:
                         print(" Target:{}. End:{}".format(self.target, next_state * self.env_dict['state_scale']))
-                        print("timestep={}, reward={}, gauss={}".format(t, ep_reward, self.gauss[self.option]))
+                        print(" timestep={}, reward={}, gauss={}".format(t, ep_reward, self.gauss[self.option]))
                         break
 
                     # check whether change option
                     self.state = next_state
 
                     # collect terminaiton function
-                    term_prob, option_term = self.brain.predict_termination([next_state], self.option)
+                    term_prob = self.brain.predict_option_termination(next_state, self.option)
 
                     # if the termination condition satisfied
-                    if np.random.uniform() < option_term:
-                        # calculate option reward
-                        self.option_reward /= self.option_time ** ALPHA
-                        self.brain.u_buffer.store(self.start_state, self.option, self.option_reward, self.state)
+                    if term_prob:
                         # change option
                         self.change_option()
 
+                        # calculate option reward
+                        # self.option_reward /= self.option_time ** ALPHA
+                        # self.brain.u_buffer.store(self.start_state, self.option, self.option_reward, self.state)
+
+                    total_steps += 1
+
                 record_reward[cycle, ep] = ep_reward
-                self.save_model()
+                # self.save_model()
         return record_reward
+
+    def choose_action(self):
+        """Choose action with noise"""
+
+        action = self.brain.choose_action(self.state, self.option)
+        action += np.random.normal(0.0, self.gauss[self.option], self.env_dict['action_dim'])
+        action = np.clip(action, -1.0, 1.0)
+
+        return action
+
+    def change_option(self):
+        """Judge whether change option"""
+
+        self.option = self.brain.choose_option(self.state, self.params['epsilon'])
+        self.start_state = self.state.copy()
+
+    def seed(self, seed=42):
+        """Wrapper seed the environment for reproducing the result"""
+
+        np.random.seed(seed)
+        self.env.seed(np.random.randint(10000))
+        tf.set_random_seed(np.random.randint(10000))
+
+    def step(self, action):
+        """Wrapper for the environment step, normalized state and action"""
+
+        next_state, reward, done, _ = self.env.step(action * self.env_dict['action_scale'])
+
+        return next_state, reward, done
+
+    def reset(self):
+        """Wrapper for the environment step"""
+
+        self.state= self.env.reset()
+        self.state /= self.env_dict['state_scale']
+
+    def update_params(self, params):
+        """Update params"""
+
+        self.params.update(params)
+        self.brain = Brain(env_dict=self.env_dict, params=self.params)
+
+    def save_model(self):
+        """Save model"""
+
+        self.model_counter += 1
+        if self.model_counter == SAVE_MODEL_STEP:
+            self.model_counter = 0
+            self.brain.save_model(self.model_ordinal)
+            self.model_ordinal += 1
 
     def record_option(self):
         """Record option"""
@@ -430,6 +432,7 @@ class soft_option_critic(object):
         self.rewards[self.reward_counter] = ep_reward
         self.duras[self.reward_counter] = t
         self.reward_counter += 1
+
         # If the buffer is filled, then save it
         if self.reward_counter == SAVE_REWARD_STEP:
             self.reward_counter = 0
@@ -448,11 +451,13 @@ class soft_option_critic(object):
 def main():
     """Main program"""
 
-    com = Comb()
-    com.pretrain()
-    com.many_episodes('inf')
+    env = gym.make('RoboschoolHalfCheetah-v1')
+    print(env.observation_space.high)
+    print(env.observation_space.low)
+    # soc = soft_option_critic(env=env)
+    # soc.train()
 
-    
+
 def render():
     """render the network"""
 
@@ -469,9 +474,4 @@ def render():
 
 if __name__ == '__main__':
 
-    opts, args = getopt.getopt(sys.argv[1:], "mr")
-    for op, value in opts:
-        if op == '-m':
-            main()
-        elif op == '-r':
-            render()
+    main()

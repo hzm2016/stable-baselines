@@ -6,12 +6,9 @@ from gym import wrappers
 import tensorflow as tf
 import os.path
 
-sys.path.append('/'.join(str.split(__file__, '/')[:-1]))
-
-from algorithms.model.buffer import ReplayBuffer
-from algorithms.model.option_critic import OptionsNetwork
-from algorithms.model.state_processor import StateProcessor
-
+from stable_baselines.oc.model.buffer import ReplayBuffer
+from stable_baselines.oc.model.option_critic import OptionsNetwork
+from stable_baselines.oc.model.state_processor import StateProcessor
 
 
 # ========================================
@@ -24,7 +21,7 @@ GYM_MONITOR_EN = False
 # Gym environment
 ENV_NAME = 'Pong-v0'
 # the input state
-IMAGE_INPUT = False
+IMAGE_INPUT = True
 # Directory for storing gym results
 MONITOR_DIR = './results/gym_ddpg'
 # Directory for storing tensorboard summary results
@@ -160,7 +157,7 @@ def train(sess, env, option_critic):  # , critic):
                 env.render()
 
             current_state = env.reset()  # note I'm using only one step, original uses 4
-            current_state = state_processor.process(sess, current_state)
+            current_state = state_processor.process(sess=sess, state=current_state)
             current_state = np.stack([current_state] * 4, axis=2)
             current_option = 0
             current_action = 0
@@ -250,7 +247,7 @@ def train(sess, env, option_critic):  # , critic):
                     """ on-policy training """
                     # done in the original paper, actor is trained on current data
                     # critic trained on sampled one
-                    _ = option_critic.train_actor(
+                    _ = OptionsNetwork.train_actor(
                         [current_state], [next_state],
                         np.reshape(current_option, [1, 1]),
                         np.reshape(current_action, [1, 1]),
@@ -307,6 +304,7 @@ def train(sess, env, option_critic):  # , critic):
                     ' | Epsilon: %.4f' % eps, " | Termination Ratio: %.2f" % (100*term_ratio)
                   )
             counter += 1
+
 
 def set_up_gym():
 

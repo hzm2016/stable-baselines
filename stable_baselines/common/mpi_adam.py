@@ -1,8 +1,59 @@
 import tensorflow as tf
 import numpy as np
+
 from mpi4py import MPI
 
-import stable_baselines.common.tf_util as tf_utils
+from stable_baselines.common.tf_util import *
+
+
+class SetFromFlat(object):
+    def __init__(self,
+                 var_list,
+                 dtype=tf.float32,
+                 sess=None):
+        """
+        Set the parameters from a flat vector
+
+        :param var_list: ([TensorFlow Tensor]) the variables
+        :param dtype: (type) the type for the placeholder
+        :param sess: (TensorFlow Session)
+        """
+        shapes = list(map(var_shape, var_list))
+        total_size = np.sum([intprod(shape) for shape in shapes])
+
+        self.theta = theta = tf.placeholder(dtype, [total_size])
+        start = 0
+        assigns = []
+        for (shape, _var) in zip(shapes, var_list):
+            size = intprod(shape)
+            assigns.append(tf.assign(_var, tf.reshape(theta[start:start + size], shape)))
+            start += size
+        self.operation = tf.group(*assigns)
+        self.sess = sess
+
+    def __call__(self, theta):
+        if self.sess is None:
+            return tf.get_default_session().run(self.operation, feed_dict={self.theta: theta})
+        else:
+            return self.sess.run(self.operation, feed_dict={self.theta: theta})
+
+
+class GetFlat(object):
+    def __init__(self, var_list, sess=None):
+        """
+        Get the parameters as a flat vector
+
+        :param var_list: ([TensorFlow Tensor]) the variables
+        :param sess: (TensorFlow Session)
+        """
+        self.operation = tf.concat(axis=0, values=[tf.reshape(v, [numel(v)]) for v in var_list])
+        self.sess = sess
+
+    def __call__(self):
+        if self.sess is None:
+            return tf.get_default_session().run(self.operation)
+        else:
+            return self.sess.run(self.operation)
 
 
 class MpiAdam(object):
@@ -25,16 +76,19 @@ class MpiAdam(object):
         self.beta2 = beta2
         self.epsilon = epsilon
         self.scale_grad_by_procs = scale_grad_by_procs
-        size = sum(tf_utils.numel(v) for v in var_list)
+        size = sum(numel(v) for v in var_list)
+
         # Exponential moving average of gradient values
         # "first moment estimate" m in the paper
         self.exp_avg = np.zeros(size, 'float32')
+
         # Exponential moving average of squared gradient values
         # "second raw moment estimate" v in the paper
         self.exp_avg_sq = np.zeros(size, 'float32')
         self.step = 0
-        self.setfromflat = tf_utils.SetFromFlat(var_list, sess=sess)
-        self.getflat = tf_utils.GetFlat(var_list, sess=sess)
+
+        self.setfromflat = SetFromFlat(var_list=var_list, sess=sess)
+        self.getflat = GetFlat(var_list, sess=sess)
         self.comm = MPI.COMM_WORLD if comm is None else comm
 
     def update(self, local_grad, learning_rate):
@@ -83,7 +137,7 @@ class MpiAdam(object):
             assert (thetaroot == thetalocal).all(), (thetaroot, thetalocal)
 
 
-@tf_utils.in_session
+@in_session
 def test_mpi_adam():
     """
     tests the MpiAdam object's functionality
@@ -97,7 +151,7 @@ def test_mpi_adam():
 
     learning_rate = 1e-2
     update_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
-    do_update = tf_utils.function([], loss, updates=[update_op])
+    do_update = function([], loss, updates=[update_op])
 
     tf.get_default_session().run(tf.global_variables_initializer())
     for step in range(10):
@@ -107,7 +161,7 @@ def test_mpi_adam():
     tf.get_default_session().run(tf.global_variables_initializer())
 
     var_list = [a_var, b_var]
-    lossandgrad = tf_utils.function([], [loss, tf_utils.flatgrad(loss, var_list)], updates=[update_op])
+    lossandgrad = function([], [loss, flatgrad(loss, var_list)], updates=[update_op])
     adam = MpiAdam(var_list)
 
     for step in range(10):

@@ -112,7 +112,7 @@ def atari_arg_parser():
 
 def mujoco_arg_parser():
     """
-    Create an argparse.ArgumentParser for run_mujoco.py.
+    Create an argparse.ArgumentParser for run_main.py.
 
     :return:  (ArgumentParser) parser {'--env': 'Reacher-v2', '--seed': 0, '--num-timesteps': int(1e6), '--play': False}
     """
@@ -126,7 +126,7 @@ def mujoco_arg_parser():
 
 def robotics_arg_parser():
     """
-    Create an argparse.ArgumentParser for run_mujoco.py.
+    Create an argparse.ArgumentParser for run_main.py.
 
     :return: (ArgumentParser) parser {'--env': 'FetchReach-v0', '--seed': 0, '--num-timesteps': int(1e6)}
     """

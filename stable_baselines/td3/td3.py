@@ -288,6 +288,7 @@ class TD3(OffPolicyRLModel):
 
             # Transform to callable if needed
             self.learning_rate = get_schedule_fn(self.learning_rate)
+
             # Initial learning rate
             current_lr = self.learning_rate(1)
 
@@ -296,6 +297,7 @@ class TD3(OffPolicyRLModel):
             episode_successes = []
             if self.action_noise is not None:
                 self.action_noise.reset()
+
             obs = self.env.reset()
             self.episode_reward = np.zeros((1,))
             ep_info_buf = deque(maxlen=100)
@@ -388,6 +390,7 @@ class TD3(OffPolicyRLModel):
 
                 num_episodes = len(episode_rewards)
                 self.num_timesteps += 1
+
                 # Display training infos
                 if self.verbose >= 1 and done and log_interval is not None and len(episode_rewards) % log_interval == 0:
                     fps = int(step / (time.time() - start_time))

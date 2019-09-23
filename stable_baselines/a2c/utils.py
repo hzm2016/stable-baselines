@@ -5,6 +5,14 @@ import numpy as np
 import tensorflow as tf
 
 
+def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
+    with tf.variable_scope(scope):
+        nin = x.get_shape()[1].value
+        w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
+        b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
+        return tf.matmul(x, w)+b
+
+
 def sample(logits):
     """
     Creates a sampling Tensor for non deterministic policies
@@ -151,8 +159,10 @@ def linear(input_tensor, scope, n_hidden, *, init_scale=1.0, init_bias=0.0):
     :param init_bias: (int) The initialization offset bias
     :return: (TensorFlow Tensor) fully connected layer
     """
+
     with tf.variable_scope(scope):
-        n_input = input_tensor.get_shape()[1].value
+        print(input_tensor.get_shape())
+        n_input = input_tensor.get_shape()[1]
         weight = tf.get_variable("w", [n_input, n_hidden], initializer=ortho_init(init_scale))
         bias = tf.get_variable("b", [n_hidden], initializer=tf.constant_initializer(init_bias))
         return tf.matmul(input_tensor, weight) + bias
@@ -307,6 +317,7 @@ def discount_with_dones(rewards, dones, gamma):
         ret = reward + gamma * ret * (1. - done)  # fixed off by one bug
         discounted.append(ret)
     return discounted[::-1]
+
 
 def make_path(path):
     """

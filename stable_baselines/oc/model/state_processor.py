@@ -27,4 +27,5 @@ class StateProcessor(object):
         Returns:
             A processed [84, 84, 1] state representing grayscale values.
         """
+
         return sess.run(self.output, feed_dict={self.input_state: state})
